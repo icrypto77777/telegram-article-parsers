@@ -2,24 +2,67 @@ import telebot
 from bs4 import BeautifulSoup
 import requests
 import html
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 import os
+import time
+import base64
+from io import BytesIO
 
 # Получаем токен из переменной окружения
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 bot = telebot.TeleBot(BOT_TOKEN)
 
-def clean_html(html_content):
-    """Очищает HTML от ненужных элементов и стилей"""
+def download_image(img_url, base_url):
+    """Скачивает изображение и возвращает его в base64"""
+    try:
+        # Формируем полный URL изображения
+        full_url = urljoin(base_url, img_url)
+        
+        # Скачиваем изображение
+        response = requests.get(full_url, timeout=10)
+        response.raise_for_status()
+        
+        # Определяем тип изображения из заголовков
+        content_type = response.headers.get('content-type', 'image/jpeg')
+        
+        # Кодируем изображение в base64
+        img_base64 = base64.b64encode(response.content).decode('utf-8')
+        
+        return f"data:{content_type};base64,{img_base64}"
+    except Exception as e:
+        print(f"Ошибка при скачивании изображения {img_url}: {str(e)}")
+        return img_url
+
+def clean_html(html_content, base_url):
+    """Очищает HTML и обрабатывает изображения"""
     soup = BeautifulSoup(html_content, 'html.parser')
     
     # Удаляем ненужные теги
     for tag in soup.find_all(['script', 'style', 'iframe', 'nav', 'footer', 'header']):
         tag.decompose()
     
-    # Удаляем все классы и ID
+    # Обрабатываем все изображения
+    for img in soup.find_all('img'):
+        src = img.get('src')
+        if src:
+            # Пропускаем data:image и внешние ссылки на популярные CDN
+            if not (src.startswith('data:') or 'wp-content' in src or 'wp-includes' in src):
+                try:
+                    new_src = download_image(src, base_url)
+                    img['src'] = new_src
+                except Exception as e:
+                    print(f"Ошибка обработки изображения: {str(e)}")
+    
+    # Очищаем ненужные атрибуты, сохраняя src для изображений
     for tag in soup.find_all(True):
-        tag.attrs = {}
+        if tag.name == 'img':
+            src = tag.get('src')
+            alt = tag.get('alt')
+            tag.attrs = {'src': src}
+            if alt:
+                tag['alt'] = alt
+        else:
+            tag.attrs = {}
     
     return str(soup)
 
@@ -47,8 +90,8 @@ def parse_article(url):
         if not article:
             return "Не удалось найти контент статьи. Попробуйте другой сайт или обратитесь к разработчику для настройки парсера под этот сайт."
         
-        # Очищаем HTML
-        clean_content = clean_html(str(article))
+        # Очищаем HTML и обрабатываем изображения
+        clean_content = clean_html(str(article), url)
         
         # Форматируем контент для WordPress
         formatted_content = f"""
@@ -66,9 +109,12 @@ def parse_article(url):
 def send_welcome(message):
     welcome_text = """
 Привет! Я помогу спарсить статью для WordPress.
-Просто отправь мне ссылку на статью, и я верну её в формате, готовом для вставки в WordPress.
+Просто отправь мне ссылку на статью, и я верну её в формате HTML-файла, готового для вставки в WordPress.
 
-Примечание: для некоторых сайтов может потребоваться дополнительная настройка парсера.
+Особенности:
+- Сохраняю изображения в base64 формате
+- Отправляю результат одним файлом
+- Сохраняю форматирование статьи
     """
     bot.reply_to(message, welcome_text)
 
@@ -79,13 +125,23 @@ def handle_url(message):
         # Проверяем, является ли сообщение ссылкой
         result = urlparse(url)
         if all([result.scheme, result.netloc]):
-            bot.reply_to(message, "Начинаю парсинг статьи...")
+            processing_msg = bot.reply_to(message, "Начинаю парсинг статьи...")
+            
+            # Парсим статью
             content = parse_article(url)
-            # Отправляем результат частями, если он слишком длинный
-            max_length = 4096
-            for i in range(0, len(content), max_length):
-                chunk = content[i:i + max_length]
-                bot.reply_to(message, chunk)
+            
+            # Создаем временный файл
+            timestamp = int(time.time())
+            filename = f"article_{timestamp}.html"
+            
+            # Отправляем файл
+            bio = BytesIO(content.encode('utf-8'))
+            bio.name = filename
+            bot.send_document(message.chat.id, bio, caption="Готово! Вставьте содержимое этого файла в HTML-редактор WordPress.")
+            
+            # Удаляем сообщение о процессе
+            bot.delete_message(message.chat.id, processing_msg.message_id)
+            
         else:
             bot.reply_to(message, "Пожалуйста, отправьте корректную ссылку на статью.")
     except Exception as e:
