@@ -3,9 +3,11 @@ from bs4 import BeautifulSoup
 import requests
 import html
 from urllib.parse import urlparse
+import os
 
-# Замените 'YOUR_BOT_TOKEN' на токен вашего бота
-bot = telebot.TeleBot('YOUR_BOT_TOKEN')
+# Получаем токен из переменной окружения
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+bot = telebot.TeleBot(BOT_TOKEN)
 
 def clean_html(html_content):
     """Очищает HTML от ненужных элементов и стилей"""
@@ -28,16 +30,22 @@ def parse_article(url):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
         
-        response = requests.get(url, headers=headers)
+        response = requests.get(url, headers=headers, timeout=30)
         response.raise_for_status()
         
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Находим основной контент (может потребоваться настройка под конкретные сайты)
-        article = soup.find('article') or soup.find('main') or soup.find('div', class_='content')
+        # Находим основной контент
+        article = (
+            soup.find('article') or 
+            soup.find('main') or 
+            soup.find('div', class_='content') or 
+            soup.find('div', class_='post-content') or
+            soup.find('div', class_='entry-content')
+        )
         
         if not article:
-            return "Не удалось найти контент статьи"
+            return "Не удалось найти контент статьи. Попробуйте другой сайт или обратитесь к разработчику для настройки парсера под этот сайт."
         
         # Очищаем HTML
         clean_content = clean_html(str(article))
@@ -56,7 +64,13 @@ def parse_article(url):
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-    bot.reply_to(message, "Привет! Отправь мне ссылку на статью, и я верну её в формате, готовом для вставки в WordPress.")
+    welcome_text = """
+Привет! Я помогу спарсить статью для WordPress.
+Просто отправь мне ссылку на статью, и я верну её в формате, готовом для вставки в WordPress.
+
+Примечание: для некоторых сайтов может потребоваться дополнительная настройка парсера.
+    """
+    bot.reply_to(message, welcome_text)
 
 @bot.message_handler(func=lambda message: True)
 def handle_url(message):
